@@ -1,0 +1,72 @@
+pipeline {
+  agent {
+    docker "pwolf/cjptower"
+  }
+  options {
+    buildDiscarder(logRotator(numToKeepStr:'5'))
+    timeout(time: 30, unit: 'MINUTES')
+  }
+  parameters {
+    string(name: 'TARGET', 
+           description: "Where we're deploying to",
+           defaultValue: 'staging')
+  }    
+  stages {
+    stage('Build and Package') {
+      steps {
+        sh "mvn clean package -DskipTests"
+        sh "mvn clean install"
+      }
+      post {
+        always {
+          junit "**/TEST-*.xml"
+        }
+        success {
+          mail to:"someone@example.com", 
+            subject:"${currentBuild.fullDisplayName} Maven build succeeded"
+        }
+        unstable {
+          mail to:"someone@example.com", 
+            subject:"${currentBuild.fullDisplayName} test failures"
+        }
+        failure {
+          mail to:"someone@example.com", 
+            subject:"${currentBuild.fullDisplayName} build failure!"
+        }
+      }
+    }
+    stage('Publish Artifact to s3') {
+      when {
+        branch "*/master"
+      }
+      steps {
+        step([$class: 'S3BucketPublisher', 
+              entries: [[bucket: 'cjptower', 
+                         selectedRegion: 'us-west-2', 
+                         sourceFile: 'gameoflife-web/target/gameoflife.war']], 
+              profileName: 'game-of-life'])
+      }
+    }
+    stage('Deploy via Tower') {
+      when {
+        branch "*/master"
+      }
+      steps {
+        withTower(host:"https://host.example.com", credentials:"tower-cli") {
+          sh "tower-cli job launch --job-template=41 " +
+             "--monitor --extra-vars='target='${params.TARGET}"
+        }
+      }
+      post {
+        success {
+          mail to:"someone@example.com", 
+            subject:"${currentBuild.fullDisplayName} deploy succeeded"
+        }
+        failure {
+          mail to:"someone@example.com", 
+            subject:"${currentBuild.fullDisplayName} deploy FAILED"
+        }
+      }
+    }
+  }
+}
